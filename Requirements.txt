@@ -1,6 +1,7 @@
 streamlit
 requests
-speechrecognition
+SpeechRecognition
 pyttsx3
 python-dotenv
-pyaudio
+
+

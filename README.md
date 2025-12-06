@@ -106,6 +106,9 @@ python-dotenv
 google-generativeai
 pyaudio
 
+TO START A CHATBOT
+streamlit run app.py
+
 🖼️ Screenshots
 
 (Add your app screenshots here)
@@ -126,13 +129,5 @@ pyaudio
 
 Abdul Karim
 Python Developer | AI Enthusiast
-AUDIO-TO-AUDIO CHATBOT Project Creator
+AUDIO-TO-AUDIO CHATBOT.
 
-If you want, I can also generate:
-
-✅ A project report PDF
-✅ A PowerPoint presentation
-✅ A GitHub profile-worthy README banner
-✅ A project logo
-
-Would you like any of these?

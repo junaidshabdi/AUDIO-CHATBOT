@@ -1,10 +1,6 @@
 streamlit
-requests
-SpeechRecognition
+speechrecognition
 pyttsx3
+google-generativeai
 python-dotenv
 pyaudio
-
-
-
-

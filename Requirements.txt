@@ -1,11 +1,10 @@
 streamlit>=1.25.0
-speechrecognition
+SpeechRecognition
 gTTS
 pydub
 soundfile
 numpy
 python-dotenv
-google-genai
+google-generativeai
 requests
-
-
+streamlit-audiorecorder

@@ -1,10 +1,18 @@
+
 import os
+import io
 import time
+import tempfile
 
 import streamlit as st
 import speech_recognition as sr
-import pyttsx3
+from gtts import gTTS
 from dotenv import load_dotenv
+
+# Browser recorder component
+from audiorecorder import audiorecorder
+
+# Gemini client (keeps your original usage)
 import google.generativeai as genai
 
 # ----------------- PAGE CONFIG -----------------
@@ -15,7 +23,6 @@ st.set_page_config(
 )
 
 # ----------------- SESSION STATE FLAGS -----------------
-
 if "stop" not in st.session_state:
     st.session_state.stop = False
 
@@ -27,8 +34,6 @@ if "input_key" not in st.session_state:
     st.session_state.input_key = 0  # Key to force text-input reset
 
 # ----------------- CONFIG & SETUP -----------------
-
-# Load environment variables (.env)
 load_dotenv()
 
 # Support both names, in case you used either
@@ -44,7 +49,6 @@ SYSTEM_INSTRUCTION = (
 )
 
 # ---------- SIDEBAR (API KEY, CONTROLS) ----------
-
 with st.sidebar:
     st.title("⚙️ Settings & Info")
     st.write("This is a **Gemini-powered Voice Assistant** built with Streamlit.")
@@ -82,12 +86,10 @@ genai.configure(api_key=api_key)
 MODEL_NAME = "gemini-flash-latest"
 model = genai.GenerativeModel(MODEL_NAME)
 
-# ---------- SAFE TEXT-TO-SPEECH (pyttsx3) ----------
-
+# ---------- TTS: gTTS (cloud-safe) ----------
 def speak_text(text: str):
     """
-    Speak text safely in Streamlit.
-    Fresh engine per call to avoid 'run loop already started' issues.
+    Convert text to speech using gTTS and play via st.audio.
     """
     if not text:
         return
@@ -96,17 +98,16 @@ def speak_text(text: str):
         return
 
     try:
-        engine = pyttsx3.init()
-        engine.setProperty("rate", 150)
-        engine.say(text)
-        engine.runAndWait()
-        engine.stop()
+        tts = gTTS(text=text, lang="en")
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+        tts.save(tmp.name)
+        # Give a tiny delay to ensure file is written
+        time.sleep(0.12)
+        st.audio(tmp.name, format="audio/mp3")
     except Exception as e:
-        print("TTS error:", e)
-
+        st.error(f"TTS error: {e}")
 
 # ---------- GEMINI CALL (USING CLIENT LIBRARY) ----------
-
 def get_gemini_response(user_text: str) -> str:
     """
     Build a single prompt including system instruction + conversation
@@ -144,35 +145,32 @@ Assistant:
 
     return reply
 
+# ---------- NEW AUDIO HELPERS (cloud-friendly) ----------
+def save_audio_bytes_to_tempfile(audio_bytes: bytes, suffix=".wav") -> str:
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    tmp.write(audio_bytes)
+    tmp.flush()
+    tmp.close()
+    return tmp.name
 
-# ---------- SPEECH TO TEXT (LOCAL MIC) ----------
-
-def speech_to_text() -> str:
-    """Capture audio from mic and convert to text using Google Speech API."""
-    recognizer = sr.Recognizer()
-
+def transcribe_file_from_path(path: str) -> str:
     try:
-        with sr.Microphone() as source:
-            recognizer.adjust_for_ambient_noise(source, duration=0.5)
-            st.info("🎤 Listening... Speak now.")
-            audio = recognizer.listen(source, timeout=5, phrase_time_limit=10)
-
-        text = recognizer.recognize_google(audio)
+        r = sr.Recognizer()
+        with sr.AudioFile(path) as source:
+            audio = r.record(source)
+        text = r.recognize_google(audio)
         return text
-    except sr.WaitTimeoutError:
-        return "I didn't hear anything. Please try again."
     except sr.UnknownValueError:
         return "Sorry, I could not understand the audio."
     except sr.RequestError:
         return "Speech service unavailable. Check your internet connection."
     except Exception as e:
-        return f"An unknown microphone error occurred: {e}"
-
+        return f"An error occurred while transcribing: {e}"
 
 # ----------------- MAIN UI -----------------
 
 st.title("🎙️ AUDIO-TO-AUDIO CHATBOT")
-st.write("Talk to your assistant using **text** or **voice**.")
+st.write("Talk to your assistant using **text** or **voice**. (Record in browser or upload a file)")
 
 st.markdown("---")
 
@@ -300,31 +298,87 @@ if submit_button and user_input.strip():
     st.session_state.input_key += 1
     st.rerun()
 
-# ---------- Voice Input ----------
+# ---------- Voice Input: KEEP Speak button UI EXACTLY the same ----------
 st.subheader("🎤 Or use your voice")
 
+# This is the same Speak button you had before (key unchanged).
 if st.button("🎙️ Speak", key="speak_button"):
     st.session_state.stop = False
+    st.info("Recording... allow microphone permission if prompted. Click Stop when finished.")
 
-    with st.spinner("Recording..."):
-        spoken_text = speech_to_text()
+    # Show the browser recorder UI (Start / Stop buttons). The recorder returns raw WAV bytes.
+    audio_data = audiorecorder("", "Stop")
 
-    if spoken_text:
-        st.info(f"🧑 You said: **{spoken_text}**")
+    if len(audio_data) > 0:
+        # Convert recorder output to raw bytes
+        try:
+            if hasattr(audio_data, "tobytes"):
+                raw_bytes = audio_data.tobytes()
+            elif isinstance(audio_data, (bytes, bytearray)):
+                raw_bytes = bytes(audio_data)
+            else:
+                raw_bytes = io.BytesIO(audio_data).getvalue()
+        except Exception as e:
+            st.error(f"Could not read recorded audio: {e}")
+            raw_bytes = None
 
-        error_messages = [
-            "I didn't hear anything. Please try again.",
-            "Sorry, I could not understand the audio.",
-            "Speech service unavailable. Check your internet connection.",
-            "An unknown microphone error occurred:",
-        ]
+        if raw_bytes:
+            # preview recorded audio
+            st.audio(raw_bytes, format="audio/wav")
 
-        if not any(error_msg in spoken_text for error_msg in error_messages):
-            ai_reply = get_gemini_response(spoken_text)
-            st.toast("Assistant replied!", icon="🤖")
-            speak_text(ai_reply)
-            st.rerun()
-        else:
-            st.warning(spoken_text)
+            with st.spinner("Transcribing..."):
+                try:
+                    tmp_path = save_audio_bytes_to_tempfile(raw_bytes, suffix=".wav")
+                    spoken_text = transcribe_file_from_path(tmp_path)
+                except Exception as e:
+                    spoken_text = f"An error occurred while processing recording: {e}"
+
+            error_messages = [
+                "I didn't hear anything. Please try again.",
+                "Sorry, I could not understand the audio.",
+                "Speech service unavailable. Check your internet connection.",
+                "An error occurred while transcribing:"
+            ]
+
+            if any(err in spoken_text for err in error_messages):
+                st.warning(spoken_text)
+            else:
+                st.info(f"🧑 You said: **{spoken_text}**")
+                ai_reply = get_gemini_response(spoken_text)
+                st.toast("Assistant replied!", icon="🤖")
+                speak_text(ai_reply)
+                st.rerun()
+
+st.markdown("---")
+
+# ---------- File upload fallback ----------
+st.subheader("🎤 Or upload an audio file")
+st.caption("Upload a WAV/MP3/M4A/FLAC file recorded on your device (phone or desktop).")
+
+uploaded_audio = st.file_uploader("Upload your voice (WAV/MP3/M4A/FLAC)", type=["wav", "mp3", "m4a", "flac"])
+
+if uploaded_audio is not None:
+    with st.spinner("Transcribing uploaded audio..."):
+        try:
+            suffix = os.path.splitext(uploaded_audio.name)[1] or ".wav"
+            # uploaded_audio.getbuffer() returns a memoryview; convert to bytes
+            tmp_path = save_audio_bytes_to_tempfile(uploaded_audio.getbuffer(), suffix=suffix)
+            transcribed_text = transcribe_file_from_path(tmp_path)
+        except Exception as e:
+            transcribed_text = f"An error occurred while transcribing uploaded file: {e}"
+
+    error_messages = [
+        "I didn't hear anything. Please try again.",
+        "Sorry, I could not understand the audio.",
+        "Speech service unavailable. Check your internet connection.",
+        "An error occurred while transcribing:"
+    ]
+
+    if any(err in transcribed_text for err in error_messages):
+        st.warning(transcribed_text)
     else:
-        st.warning("No speech detected. Please try again.")
+        st.info(f"🧑 You said: **{transcribed_text}**")
+        ai_reply = get_gemini_response(transcribed_text)
+        st.toast("Assistant replied!", icon="🤖")
+        speak_text(ai_reply)
+        st.rerun()

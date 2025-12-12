@@ -1,9 +1,13 @@
+# app.py -- cloud-deployable version (file-upload STT + gTTS TTS)
+
 import os
+import tempfile
 import time
+import io
 
 import streamlit as st
 import speech_recognition as sr
-import pyttsx3
+from gtts import gTTS
 from dotenv import load_dotenv
 import google.generativeai as genai
 
@@ -15,19 +19,17 @@ st.set_page_config(
 )
 
 # ----------------- SESSION STATE FLAGS -----------------
-
 if "stop" not in st.session_state:
     st.session_state.stop = False
 
 if "chat_history" not in st.session_state:
-    # list of {"role": "user"/"assistant", "text": "..."}
+    # list of {"role": "user"/"assistant", "text": "..." }
     st.session_state.chat_history = []
 
 if "input_key" not in st.session_state:
     st.session_state.input_key = 0  # Key to force text-input reset
 
 # ----------------- CONFIG & SETUP -----------------
-
 # Load environment variables (.env)
 load_dotenv()
 
@@ -44,7 +46,6 @@ SYSTEM_INSTRUCTION = (
 )
 
 # ---------- SIDEBAR (API KEY, CONTROLS) ----------
-
 with st.sidebar:
     st.title("⚙️ Settings & Info")
     st.write("This is a **Gemini-powered Voice Assistant** built with Streamlit.")
@@ -61,7 +62,7 @@ with st.sidebar:
         st.success("✅ API key ready")
     else:
         st.error("❌ Enter your Gemini API key above.")
-    
+
     if st.button("🧹 Clear Chat"):
         st.session_state.chat_history = []
         st.session_state.input_key += 1
@@ -77,17 +78,15 @@ with st.sidebar:
 if not api_key:
     st.stop()
 
-# Configure Gemini client
+# Configure Gemini client (keeps original usage)
 genai.configure(api_key=api_key)
 MODEL_NAME = "gemini-flash-latest"
 model = genai.GenerativeModel(MODEL_NAME)
 
-# ---------- SAFE TEXT-TO-SPEECH (pyttsx3) ----------
-
+# ---------- TEXT-TO-SPEECH (gTTS) ----------
 def speak_text(text: str):
     """
-    Speak text safely in Streamlit.
-    Fresh engine per call to avoid 'run loop already started' issues.
+    Convert text to speech using gTTS and play via st.audio.
     """
     if not text:
         return
@@ -96,17 +95,16 @@ def speak_text(text: str):
         return
 
     try:
-        engine = pyttsx3.init()
-        engine.setProperty("rate", 150)
-        engine.say(text)
-        engine.runAndWait()
-        engine.stop()
+        tts = gTTS(text=text, lang="en")
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+        tts.save(tmp.name)
+        # Small pause to ensure file is flushed
+        time.sleep(0.2)
+        st.audio(tmp.name, format="audio/mp3")
     except Exception as e:
-        print("TTS error:", e)
-
+        st.error(f"TTS error: {e}")
 
 # ---------- GEMINI CALL (USING CLIENT LIBRARY) ----------
-
 def get_gemini_response(user_text: str) -> str:
     """
     Build a single prompt including system instruction + conversation
@@ -132,6 +130,7 @@ Assistant:
 
     try:
         response = model.generate_content(full_prompt)
+        # response.text in original code; keep compatibility
         reply = (response.text or "").strip()
         if not reply:
             reply = "I'm sorry, I couldn't generate a response."
@@ -144,35 +143,43 @@ Assistant:
 
     return reply
 
-
-# ---------- SPEECH TO TEXT (LOCAL MIC) ----------
-
-def speech_to_text() -> str:
-    """Capture audio from mic and convert to text using Google Speech API."""
-    recognizer = sr.Recognizer()
+# ---------- SPEECH TO TEXT (From Uploaded File) ----------
+def transcribe_audio_file(uploaded_file) -> str:
+    """
+    Transcribe an uploaded audio file (wav/mp3/m4a/etc.) using speech_recognition.
+    Writes the uploaded file to a temporary file and uses sr.AudioFile for robust reading.
+    """
+    if uploaded_file is None:
+        return ""
 
     try:
-        with sr.Microphone() as source:
-            recognizer.adjust_for_ambient_noise(source, duration=0.5)
-            st.info("🎤 Listening... Speak now.")
-            audio = recognizer.listen(source, timeout=5, phrase_time_limit=10)
+        # Save BytesIO to a temp file with correct suffix
+        file_bytes = uploaded_file.getbuffer()
+        suffix = os.path.splitext(uploaded_file.name)[1] or ".wav"
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+        tmp.write(file_bytes)
+        tmp.flush()
+        tmp.close()
 
-        text = recognizer.recognize_google(audio)
+        r = sr.Recognizer()
+        with sr.AudioFile(tmp.name) as source:
+            audio = r.record(source)
+
+        # Use Google Web Speech API for transcription (requires internet)
+        text = r.recognize_google(audio)
         return text
-    except sr.WaitTimeoutError:
-        return "I didn't hear anything. Please try again."
+
     except sr.UnknownValueError:
         return "Sorry, I could not understand the audio."
     except sr.RequestError:
         return "Speech service unavailable. Check your internet connection."
     except Exception as e:
-        return f"An unknown microphone error occurred: {e}"
-
+        return f"An error occurred while transcribing: {e}"
 
 # ----------------- MAIN UI -----------------
 
 st.title("🎙️ AUDIO-TO-AUDIO CHATBOT")
-st.write("Talk to your assistant using **text** or **voice**.")
+st.write("Talk to your assistant using **text** or **voice** (upload an audio file).")
 
 st.markdown("---")
 
@@ -180,12 +187,10 @@ st.markdown("---")
 st.markdown(
     """
     <style>
-
     .stApp {
         background-color: #F2F3F5;
         color: #222222 !important;
     }
-
     section[data-testid="stSidebar"] {
         background-color: #E6E8EB !important;
         color: #222222 !important;
@@ -193,7 +198,6 @@ st.markdown(
     section[data-testid="stSidebar"] * {
         color: #222222 !important;
     }
-
     .user-bubble {
         background-color: #D6F5D6;
         padding: 10px 15px;
@@ -203,7 +207,6 @@ st.markdown(
         margin-left: auto;
         color: #000000 !important;
     }
-
     .ai-bubble {
         background-color: #FFFFFF;
         padding: 10px 15px;
@@ -213,20 +216,17 @@ st.markdown(
         margin-right: auto;
         color: #000000 !important;
     }
-
     .role-label {
         font-size: 12px;
         color: #444444 !important;
         margin-bottom: 2px;
     }
-
     input[type="text"] {
         background-color: #FFFFFF !important;
         color: #000000 !important;
         border: 1px solid #CCCCCC !important;
         border-radius: 8px !important;
     }
-
     .stButton>button {
         background-color: #4A90E2;
         color: white !important;
@@ -239,14 +239,12 @@ st.markdown(
         background-color: #3C78C6;
         color: white !important;
     }
-
     </style>
     """,
     unsafe_allow_html=True,
 )
 
 # ---------- Conversation (Chat History) ----------
-
 st.subheader("💬 Conversation")
 
 for msg in st.session_state.chat_history:
@@ -268,7 +266,7 @@ for msg in st.session_state.chat_history:
         )
 
 if not st.session_state.chat_history:
-    st.info("💡 Start a conversation by typing a message or using voice input!")
+    st.info("💡 Start a conversation by typing a message or uploading voice input!")
 
 st.markdown("---")
 
@@ -295,40 +293,37 @@ if submit_button and user_input.strip():
     ai_reply = get_gemini_response(user_text)
     st.toast("Assistant replied!", icon="🤖")
 
+    # speak_text uses gTTS + st.audio now
     speak_text(ai_reply)
 
     st.session_state.input_key += 1
     st.rerun()
 
-# ---------- Voice Input ----------
-st.subheader("🎤 Or use your voice")
+# ---------- Voice Input (file uploader) ----------
+st.subheader("🎤 Or use your voice (upload audio file)")
 
-if st.button("🎙️ Speak", key="speak_button"):
-    st.session_state.stop = False
+st.caption("Upload a WAV/MP3 file recorded on your device (phone or desktop).")
 
-    with st.spinner("Recording..."):
-        spoken_text = speech_to_text()
+uploaded_audio = st.file_uploader("Upload your voice (WAV/MP3)", type=["wav", "mp3", "m4a", "flac"])
 
-    if spoken_text:
-        st.info(f"🧑 You said: **{spoken_text}**")
+if uploaded_audio is not None:
+    with st.spinner("Transcribing..."):
+        transcribed_text = transcribe_audio_file(uploaded_audio)
 
-        error_messages = [
-            "I didn't hear anything. Please try again.",
-            "Sorry, I could not understand the audio.",
-            "Speech service unavailable. Check your internet connection.",
-            "An unknown microphone error occurred:",
-        ]
+    # If transcribed_text includes an error message, show a warning
+    error_messages = [
+        "I didn't hear anything. Please try again.",
+        "Sorry, I could not understand the audio.",
+        "Speech service unavailable. Check your internet connection.",
+        "An error occurred while transcribing:"
+    ]
 
-        if not any(error_msg in spoken_text for error_msg in error_messages):
-            ai_reply = get_gemini_response(spoken_text)
-            st.toast("Assistant replied!", icon="🤖")
-            speak_text(ai_reply)
-            st.rerun()
-        else:
-            st.warning(spoken_text)
+    if any(err in transcribed_text for err in error_messages):
+        st.warning(transcribed_text)
     else:
-        st.warning("No speech detected. Please try again.")
-
-
-
+        st.info(f"🧑 You said: **{transcribed_text}**")
+        ai_reply = get_gemini_response(transcribed_text)
+        st.toast("Assistant replied!", icon="🤖")
+        speak_text(ai_reply)
+        st.rerun()
 
